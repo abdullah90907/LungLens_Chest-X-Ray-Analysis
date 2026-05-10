@@ -1,4 +1,4 @@
-# 🩺 MedAI Insights - Medical Diagnosis Application
+# 🩺 LungLens - Chest X- Ray Analysis
 
 ## Overview
 MedAI Insights is an advanced medical diagnosis application leveraging AI for chest X-ray analysis and medical consultations.
