@@ -1,0 +1,21 @@
+{
+  "name": "lunglens-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test src/domain.test.js"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.2.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/manrope": "^5.2.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

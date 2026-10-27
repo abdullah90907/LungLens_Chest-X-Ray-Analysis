@@ -1,53 +1,39 @@
-# Virtual Environment
+__pycache__/
+.pytest_cache/
+.venv/
+models/
+prepared/
+images/
+masks/
+.env
+
+.env.*
+!.env.example
+*.log
+evaluation.json
+frontend/node_modules/
+frontend/dist/
+
+# Local historical reference material
+archive/
+
+# Additional generated files, local data and model weights
 venv/
 env/
-.env/
-.venv/
-
-# Python bytecode
-__pycache__/
 *.py[cod]
-*$py.class
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Model checkpoints and weights
+.ipynb_checkpoints/
 *.pth
 *.pt
 *.pkl
-
-# IDE and Editor folders
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Machine Learning specific
 *.h5
 *.hdf5
 *.keras
-
-# Temporary files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
 *.tmp
-*~
-
-# Data files (if you have large datasets)
-*.csv
-*.json
-*.xlsx
-
-# Project specific
 uploaded_images/
 model_weights/
 outputs/
-
-# Streamlit specific
 .streamlit/

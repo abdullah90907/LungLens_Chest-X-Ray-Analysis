@@ -1,0 +1,76 @@
+import {decodeAttribution,displayAttribution} from './heatmap-display.js';
+import {escapeHTML as esc, displayLabel, imageMime, apiError} from './domain.js';
+
+const png = value => {
+  if(typeof value!=='string'||value.length>16*1024*1024||!value.length||!/^[A-Za-z0-9+/=]+$/.test(value)) throw new Error('The model returned an invalid visualization.');
+  return `data:image/png;base64,${value}`;
+};
+
+async function coloredMask(structure) {
+  if(!Array.isArray(structure.color_rgb)||structure.color_rgb.length!==3||!structure.color_rgb.every(v=>Number.isInteger(v)&&v>=0&&v<=255))throw new Error('Invalid mask colors.');
+  const img=new Image();img.src=png(structure.mask_png_base64);await img.decode();
+  if(img.width>1024||img.height>1024)throw new Error('Mask exceeds supported preview dimensions.');
+  const canvas=document.createElement('canvas');canvas.width=img.width;canvas.height=img.height;
+  const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0);const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);
+  for(let p=0;p<pixels.data.length;p+=4){const active=pixels.data[p]>127;pixels.data[p]=structure.color_rgb[0];pixels.data[p+1]=structure.color_rgb[1];pixels.data[p+2]=structure.color_rgb[2];pixels.data[p+3]=active?155:0;}
+  ctx.putImageData(pixels,0,0);return canvas.toDataURL('image/png');
+}
+
+export function createResearch({getState,apiBase,onChange,icon}) {
+  let mode='source',finding='',heatmaps=new Map(),anatomy=null,layers={},visible=new Set(),busy=null,error='',opacity=.8,controller=null,generation=0,showCrop=true,compare=true,brightness=.8,cutoff=0,attributionMaps=new Map();
+  function reset(){generation++;controller?.abort();controller=null;mode='source';finding='';heatmaps=new Map();anatomy=null;layers={};visible=new Set();busy=null;error='';opacity=.8;showCrop=true;compare=true;brightness=.8;cutoff=0;attributionMaps=new Map();}
+  function cancel(){generation++;controller?.abort();controller=null;busy=null;error='Visualization request cancelled.';onChange();}
+  function render(){
+    const state=getState(),result=state.result;if(!result)return '';
+    if(!result.findings.some(row=>row.label===finding))finding=result.findings[0].label;
+    const heatmap=heatmaps.get(finding),hasLayer=mode==='heatmap'?!!heatmap:mode==='anatomy'?!!anatomy:false;
+    const selected=result.findings.find(row=>row.label===finding);
+    const width=state.inspection.width,height=state.inspection.height,side=Math.min(width,height);
+    const left=Math.floor(width/2)-Math.floor(side/2),top=Math.floor(height/2)-Math.floor(side/2);
+    const cropFrame=showCrop?`<div class="model-crop-frame" style="left:${left/width*100}%;top:${top/height*100}%;width:${side/width*100}%;height:${side/height*100}%"><span>MODEL CROP</span></div>`:'';
+    const imageLayers=mode==='heatmap'&&heatmap?`<img class="research-overlay" data-heatmap-layer src="${(heatmap.display_png || png(heatmap.heatmap_png_base64))}" alt="Relative attribution for ${esc(displayLabel(finding))}" style="opacity:${opacity}"/>`:mode==='anatomy'&&anatomy?anatomy.structures.filter(row=>visible.has(row.label)).map(row=>`<img class="research-overlay" src="${layers[row.label]}" alt="${esc(row.label)} anatomical mask" style="opacity:${opacity}"/>`).join(''):'';
+    const viewer=(original=false)=>`<div class="research-viewport ${busy&&!original?'is-generating':''}"><div class="research-image-plane" style="aspect-ratio:${width}/${height};width:min(100%,calc(var(--viewer-height) * ${width/height}))"><img class="research-source ${!original&&mode==='heatmap'&&heatmap?'heatmap-source':''}" src="${state.url}" alt="${original?'Original image for comparison':'Input image, full field of view'}" style="filter:brightness(${!original&&mode==='heatmap'&&heatmap?brightness:1})"/>${original?'':imageLayers}${cropFrame}</div><div class="viewer-corners" aria-hidden="true"></div><span class="viewer-mode-label">${original?'ORIGINAL IMAGE':mode==='source'?'SOURCE IMAGE':mode==='heatmap'&&heatmap?'RELATIVE ATTRIBUTION':mode==='anatomy'&&anatomy?'ANATOMICAL SEGMENTATION':'SOURCE · GENERATE TO EXPLORE'}</span>${busy&&!original?`<div class="viewer-loading"><span class="viewer-scan" aria-hidden="true"></span><div><span class="spinner"></span><strong>${busy==='heatmap'?'Tracing the model’s signal':'Mapping anatomical structures'}</strong><span>Local processing · the first request may take longer.</span><button data-research-cancel>Cancel request</button></div></div>`:''}</div>`;
+    return `<section class="research-section" aria-label="Research image explorer"><div class="research-heading"><div><span class="eyebrow">A MORE INFORMED PERSPECTIVE</span><h3>Look beyond the number.</h3></div><span class="research-badge">${icon('scan')} Visual explorer</span></div><div class="research-tabs" role="group" aria-label="Image visualization mode">${[['source','Source image','file'],['heatmap','Finding heatmap','chart'],['anatomy','Anatomy layers','lung']].map(([value,label,name])=>`<button data-research-mode="${value}" class="${mode===value?'selected':''}" aria-pressed="${mode===value}">${icon(name)}${label}</button>`).join('')}</div>${mode==='heatmap'?`<div class="heatmap-picker"><label for="heatmap-finding">Explore a finding<select id="heatmap-finding" ${busy?'disabled':''}>${[...result.findings].sort((a,b)=>a.label.localeCompare(b.label)).map(row=>`<option value="${esc(row.label)}" ${row.label===finding?'selected':''}>${esc(displayLabel(row.label))}</option>`).join('')}</select></label><div class="selected-score"><span>Model score</span><strong>${selected.score.toFixed(3)}</strong></div><button class="button button-dark" data-research-generate="heatmap" ${busy?'disabled':''}>${busy==='heatmap'?'<span class="spinner"></span> Generating…':heatmap?'Regenerate':'Generate heatmap'}</button></div>`:''}${mode==='anatomy'?`<div class="anatomy-toolbar"><p>Automatic lung and heart outlines.<br><span>These masks show anatomy, not disease.</span></p><button class="button button-dark" data-research-generate="anatomy" ${busy?'disabled':''}>${busy==='anatomy'?'<span class="spinner"></span> Segmenting…':anatomy?'Regenerate layers':'Generate anatomy'}</button></div>`:''}${mode==='heatmap'&&heatmap?`<div class="heatmap-layout-toolbar"><div role="group" aria-label="Heatmap comparison layout"><button data-heatmap-layout="overlay" class="${!compare?'selected':''}" aria-pressed="${!compare}">Overlay</button><button data-heatmap-layout="compare" class="${compare?'selected':''}" aria-pressed="${compare}">Side by side</button></div><span>Same image · aligned model crop</span></div>`:''}${mode==='heatmap'&&heatmap&&compare?`<div class="heatmap-comparison">${viewer(true)}${viewer()}</div>`:viewer()}<div class="crop-guide-control"><button data-research-crop aria-pressed="${showCrop}">${icon(showCrop?"check":"plus")} Model crop guide</button><span>Dashed frame: model input · shaded regions: unassessed</span></div>${mode==='anatomy'&&anatomy?`<div class="anatomy-legend" role="group" aria-label="Visible anatomical layers">${anatomy.structures.map(row=>`<button data-structure="${esc(row.label)}" aria-pressed="${visible.has(row.label)}" class="${visible.has(row.label)?'selected':''}"><i style="background:rgb(${row.color_rgb.join(',')})"></i>${esc(row.label)}${visible.has(row.label)?icon('check'):icon('plus')}</button>`).join('')}</div>`:''}${hasLayer?`<div class="overlay-controls"><label for="overlay-opacity">Overlay opacity</label><input type="range" id="overlay-opacity" min="0" max="100" value="${Math.round(opacity*100)}"/><output id="overlay-value" for="overlay-opacity">${Math.round(opacity*100)}%</output>${mode==='heatmap'?'<span class="heatmap-scale"><i></i>Low → high relative influence</span>':''}</div>`:''}${mode==='heatmap'&&heatmap?`<div class="heatmap-display-controls"><label for="heatmap-brightness"><span>X-ray brightness <output id="brightness-value">${Math.round(brightness*100)}%</output></span><input id="heatmap-brightness" type="range" min="40" max="100" value="${Math.round(brightness*100)}"/></label><label for="heatmap-cutoff"><span>Hide influence below <output id="cutoff-value">${cutoff.toFixed(2)}</output></span><input id="heatmap-cutoff" type="range" min="0" max="95" value="${Math.round(cutoff*100)}"/></label><button data-heatmap-reset>Reset display</button><p>Display adjustments only. The finding score and underlying attribution are unchanged. Hidden weak signals are not confirmed negative regions.</p></div>`:''}${error?`<div class="error-notice" role="alert">${icon('info')}<span>${esc(error)}</span></div>`:''}<p class="visualization-notice">${icon('info')}<span>${mode==='heatmap'?heatmap?.status==='no_positive_attribution'?'No positive attribution was produced for this image and finding. A transparent map is expected. This does not rule out disease.':'Heatmaps show relative model influence, not confirmed disease locations. Colors cannot be compared as severity across images.':mode==='anatomy'?'Anatomical research masks are not pathology boundaries or diagnostic measurements.':'The full input is shown for context. Classification uses a centered square crop; regions outside it are not assessed.'}${hasLayer?' The overlay is aligned to the model’s center crop; outside-crop regions are unassessed.':''}</span></p>${hasLayer?`<details class="visualization-metadata"><summary>Visualization details ${icon('chevron')}</summary><dl><div><dt>Method</dt><dd>${mode==='heatmap'?'Grad-CAM · pre-sigmoid finding logit':'ChestX-Det PSPNet · mask threshold 0.5'}</dd></div><div><dt>Original crop</dt><dd>${esc(JSON.stringify((mode==='heatmap'?heatmap:anatomy).crop_box))}</dd></div><div><dt>Preview</dt><dd>${(mode==='heatmap'?heatmap:anatomy).width} × ${(mode==='heatmap'?heatmap:anatomy).height}</dd></div></dl></details>`:''}</section>`;
+  }
+  function bind(root){
+    root?.querySelectorAll('[data-research-mode]').forEach(button=>button.addEventListener('click',()=>{mode=button.dataset.researchMode;error='';onChange();}));
+    root?.querySelector('#heatmap-finding')?.addEventListener('change',event=>{finding=event.target.value;error='';const map=heatmaps.get(finding),decoded=attributionMaps.get(finding);if(map&&decoded)map.display_png=displayAttribution(decoded,cutoff);onChange();});
+    root?.querySelectorAll('[data-research-generate]').forEach(button=>button.addEventListener('click',()=>generate(button.dataset.researchGenerate)));
+    root?.querySelectorAll('[data-heatmap-layout]').forEach(button=>button.addEventListener('click',()=>{compare=button.dataset.heatmapLayout==='compare';onChange();}));
+    root?.querySelector('#heatmap-brightness')?.addEventListener('input',event=>{brightness=Number(event.target.value)/100;root.querySelectorAll('.heatmap-source').forEach(image=>image.style.filter=`brightness(${brightness})`);root.querySelector('#brightness-value').textContent=`${Math.round(brightness*100)}%`;});
+    root?.querySelector('#heatmap-cutoff')?.addEventListener('input',event=>{cutoff=Number(event.target.value)/100;const map=heatmaps.get(finding),decoded=attributionMaps.get(finding);if(map&&decoded){map.display_png=displayAttribution(decoded,cutoff);root.querySelectorAll('[data-heatmap-layer]').forEach(image=>image.src=map.display_png);}root.querySelector('#cutoff-value').textContent=cutoff.toFixed(2);});
+    root?.querySelector('[data-heatmap-reset]')?.addEventListener('click',()=>{opacity=.8;brightness=.8;cutoff=0;const map=heatmaps.get(finding),decoded=attributionMaps.get(finding);if(map&&decoded)map.display_png=displayAttribution(decoded,0);onChange();});
+    root?.querySelector('[data-research-cancel]')?.addEventListener('click',cancel);
+    root?.querySelector('[data-research-crop]')?.addEventListener('click',()=>{showCrop=!showCrop;onChange();});
+    root?.querySelectorAll('[data-structure]').forEach(button=>button.addEventListener('click',()=>{const label=button.dataset.structure;visible.has(label)?visible.delete(label):visible.add(label);onChange();}));
+    root?.querySelector('#overlay-opacity')?.addEventListener('input',event=>{opacity=Number(event.target.value)/100;root.querySelectorAll('.research-overlay').forEach(image=>image.style.opacity=String(opacity));root.querySelector('#overlay-value').textContent=`${Math.round(opacity*100)}%`;});
+  }
+  async function generate(kind){
+    const state=getState();if(!state.file||!state.result||busy)return;
+    const version=generation,analysisId=state.result.analysis_id,target=finding;
+    controller=new AbortController();const active=controller;let timedOut=false;
+    const timeout=setTimeout(()=>{timedOut=true;active.abort();},180000);
+    busy=kind;error='';onChange();
+    try{
+      const query=new URLSearchParams();if(state.result.image.view)query.set('view',state.result.image.view);if(kind==='heatmap')query.set('finding',target);else query.set('threshold','0.5');
+      const response=await fetch(`${apiBase}/research/${kind}?${query}`,{method:'POST',headers:{'Content-Type':imageMime(state.file)},body:state.file,signal:active.signal});
+      const payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(apiError(payload,response.status));
+      if(version!==generation||getState().result?.analysis_id!==analysisId)return;
+      if(!Number.isInteger(payload.width)||!Number.isInteger(payload.height)||payload.width<1||payload.height<1||payload.width>1024||payload.height>1024||!Array.isArray(payload.crop_box)||payload.crop_box.length!==4)throw new Error('The model returned an invalid visualization shape.');
+      if(kind==='heatmap'){
+        if(payload.finding!==target)throw new Error('Heatmap finding did not match the request.');
+        if(payload.model?.checkpoint_sha256!==getState().result.model.checkpoint_sha256)throw new Error('The classifier changed since this analysis. Run a new analysis before generating a heatmap.');
+        const decoded=await decodeAttribution(png(payload.heatmap_png_base64));png(payload.overlay_png_base64);
+        if(version!==generation||getState().result?.analysis_id!==analysisId)return;
+        attributionMaps.set(target,decoded);payload.display_png=displayAttribution(decoded,cutoff);heatmaps.set(target,payload);
+      }else{
+        const expected=['Left Lung','Right Lung','Heart'];if(!Array.isArray(payload.structures)||payload.structures.length!==3||new Set(payload.structures.map(s=>s.label)).size!==3||!payload.structures.every(s=>expected.includes(s.label)))throw new Error('Anatomy layers were incomplete.');
+        png(payload.overlay_png_base64);const converted={};for(const row of payload.structures)converted[row.label]=await coloredMask(row);
+        if(version!==generation||getState().result?.analysis_id!==analysisId)return;
+        anatomy=payload;layers=converted;visible=new Set(expected);
+      }
+    }catch(caught){if(version===generation)error=active.signal.aborted?(timedOut?'The visualization took too long. Try again after checking the backend.':'Visualization request cancelled.'):caught instanceof TypeError?'Unable to reach the visualization service. Check the backend connection.':caught.message;}
+    finally{clearTimeout(timeout);if(version===generation){busy=null;controller=null;onChange();}}
+  }
+  return {render,bind,reset,cancel,reportVisuals:()=>({heatmaps:[...heatmaps.values()],anatomy})};
+}
